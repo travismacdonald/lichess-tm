@@ -1,92 +1,164 @@
 package com.cannonballapps.lichess
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import com.cannonballapps.lichess.ui.theme.LichessTheme
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import net.openid.appauth.AuthState
+import net.openid.appauth.AuthorizationException
+import net.openid.appauth.AuthorizationRequest
+import net.openid.appauth.AuthorizationResponse
+import net.openid.appauth.AuthorizationService
+import net.openid.appauth.AuthorizationService.TokenResponseCallback
+import net.openid.appauth.AuthorizationServiceConfiguration
+import net.openid.appauth.ResponseTypeValues
 
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val RC_AUTH = 4
+    }
+
+    private val meFlow = MutableStateFlow<String>("null")
+    private val meToken = MutableStateFlow<String>("null")
+
+    private val authService by lazy { AuthorizationService(this) }
+
+    private var authState: AuthState? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        Log.d("fubar", "main activity")
 
         setContent {
             LichessTheme {
                 // A surface container using the 'background' color from the theme
+
+                val email = meFlow.collectAsState()
+                val token = meToken.collectAsState()
+
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    Greeting("Android")
+                    Column() {
+                        Button(
+                            onClick = ::authenticateWithLichess,
+                        ) {
+                            Text(text = "authenticate")
+                        }
+                        Button(
+                            onClick = { makeEmailRequest() },
+                        ) {
+                            Text(text = "show email")
+                        }
+                        Text(email.value)
+                        Text(token.value)
+                    }
                 }
             }
         }
 
     }
 
-    override fun onResume() {
-        super.onResume()
+    fun makeEmailRequest() {
+//        Toast.makeText(this.applicationContext, "fuck", Toast.LENGTH_LONG).show()
+        meFlow.value = "fetching"
+
+        val instance = LichessRetrofitHelper.getInstance()
+
         val quotesApi = RetrofitHelper.getInstance().create(QuotesApi::class.java)
         val lichessApi = LichessRetrofitHelper.getInstance().create(LichessApi::class.java)
+
         // launching a new coroutine
         GlobalScope.launch {
             Log.d("fubar", "fuck")
-//                val result = quotesApi.getQuotes()
-            val result = lichessApi.getAccountEmail()
-            if (result != null)
-            // Checking the results
-                Log.d("fubar", result.body().toString())
+            val result = lichessApi.getAccountEmail("Bearer ${meToken.value}")
+            Log.d("fubar", "${result.toString()}")
+            Log.d("fubar", "${result.errorBody()?.string()}")
+            Log.d("fubar", "${result.headers()}")
+            if (result != null) {
+                meFlow.value = result.body().toString()
+            }
+        }
+
+    }
+
+    fun authenticateWithLichess() {
+        val serviceConfig = AuthorizationServiceConfiguration(
+            Uri.parse("https://lichess.org/oauth"),  // authorization endpoint
+            Uri.parse("https://lichess.org/api/token"), // token endpoint
+        )
+        authState = AuthState(serviceConfig)
+
+        val authRequestBuilder = AuthorizationRequest.Builder(
+            serviceConfig,
+            "com.cannonballapps.lichess",
+            ResponseTypeValues.CODE,  // the response_type value: we want a code
+
+
+            Uri.parse("com.cannonballapps.lichess:/lichesstm"), // the redirect URI to which the auth response is sent
+
+
+        )
+
+        val authRequest = authRequestBuilder
+            .setScope("email:read")
+            .build()
+
+        doAuthorization(authRequest)
+
+    }
+
+    private fun doAuthorization(authRequest: AuthorizationRequest) {
+        val authIntent = authService.getAuthorizationRequestIntent(authRequest)
+        startActivityForResult(authIntent, RC_AUTH)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == RC_AUTH) {
+            val resp = AuthorizationResponse.fromIntent(data!!)
+            val ex = AuthorizationException.fromIntent(data)
+
+            authState?.apply {
+                this.update(resp, ex)
+            }
+
+//            meToken.value = resp?.authorizationCode ?: "no token"
+            // ... process the response or exception ...
+
+            authService.performTokenRequest(
+                resp!!.createTokenExchangeRequest(),
+                TokenResponseCallback { resp, ex ->
+                    if (resp != null) {
+                        Log.d("fubar", "${resp.toString()} ${ex?.toString()}")
+                        meToken.value = resp.accessToken ?: "null"
+                        // exchange succeeded
+                    } else {
+                        // authorization failed, check ex for more details
+                    }
+                })
+
+        } else {
+            // ...
         }
     }
 }
-
-//object RetrofitHelper {
-//
-//    val baseUrl = "https://quotable.io/"
-//
-//    fun getInstance(): Retrofit {
-//        return Retrofit.Builder().baseUrl(baseUrl)
-//            .addConverterFactory(GsonConverterFactory.create())
-//            // we need to add converter factory to
-//            // convert JSON object to Java object
-//            .build()
-//    }
-//}
-//
-//interface QuotesApi {
-//    @GET("/quotes")
-//    suspend fun getQuotes() : Response<QuoteList>
-//}
-//
-//data class Result(
-//    val _id: String,
-//    val author: String,
-//    val authorSlug: String,
-//    val content: String,
-//    val dateAdded: String,
-//    val dateModified: String,
-//    val length: Int,
-//    val tags: List<String>
-//)
-//
-//data class QuoteList(
-//    val count: Int,
-//    val lastItemIndex: Int,
-//    val page: Int,
-//    val results: List<Result>,
-//    val totalCount: Int,
-//    val totalPages: Int
-//)
-
 
 @Composable
 fun Greeting(name: String, modifier: Modifier = Modifier) {
