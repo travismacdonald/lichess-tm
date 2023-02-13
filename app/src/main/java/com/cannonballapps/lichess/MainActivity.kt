@@ -16,16 +16,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.lifecycle.lifecycleScope
 import com.cannonballapps.lichess.ui.theme.LichessTheme
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import net.openid.appauth.AuthState
 import net.openid.appauth.AuthorizationException
 import net.openid.appauth.AuthorizationRequest
 import net.openid.appauth.AuthorizationResponse
 import net.openid.appauth.AuthorizationService
-import net.openid.appauth.AuthorizationService.TokenResponseCallback
 import net.openid.appauth.AuthorizationServiceConfiguration
 import net.openid.appauth.ResponseTypeValues
 
@@ -36,8 +38,12 @@ class MainActivity : ComponentActivity() {
         private const val RC_AUTH = 4
     }
 
+    // todo delete these
     private val meFlow = MutableStateFlow("null")
     private val meToken = MutableStateFlow("null")
+
+    private val _userAuthStateFlow: MutableStateFlow<UserOAuthState> = MutableStateFlow(UserOAuthState.NotAuthorized)
+    private val userAuthStateFlow: StateFlow<UserOAuthState> = _userAuthStateFlow.asStateFlow()
 
     private val authService by lazy { AuthorizationService(this) }
 
@@ -46,13 +52,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-
         setContent {
             LichessTheme {
                 // A surface container using the 'background' color from the theme
 
-                val email = meFlow.collectAsState()
-                val token = meToken.collectAsState()
+//                val email = meFlow.collectAsState()
+//                val token = meToken.collectAsState()
+
+                val userAuthState = userAuthStateFlow.collectAsState()
 
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     Column() {
@@ -66,8 +73,23 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Text(text = "show email")
                         }
-                        Text(email.value)
-                        Text(token.value)
+                        when (val authState = userAuthState.value) {
+                            UserOAuthState.NotAuthorized -> {
+                                Text(text = "Not authorized")
+                            }
+                            UserOAuthState.RequestingAccessCode -> {
+                                Text(text = "Requesting access code")
+                            }
+                            is UserOAuthState.AcquiringAccessToken -> {
+                                Text(text = "Acquiring access token")
+                            }
+                            is UserOAuthState.Authorized -> {
+                                Text(text = "Authorized: ${authState.accessToken}")
+                            }
+                            is UserOAuthState.Error -> {
+                                Text(text = "Error")
+                            }
+                        }
                     }
                 }
             }
@@ -75,22 +97,14 @@ class MainActivity : ComponentActivity() {
 
     }
 
-    fun makeEmailRequest() {
-//        Toast.makeText(this.applicationContext, "fuck", Toast.LENGTH_LONG).show()
+    private fun makeEmailRequest() {
         meFlow.value = "fetching"
 
-        val instance = LichessRetrofitHelper.getInstance()
-
-        val quotesApi = RetrofitHelper.getInstance().create(QuotesApi::class.java)
         val lichessApi = LichessRetrofitHelper.getInstance().create(LichessApi::class.java)
 
         // launching a new coroutine
-        GlobalScope.launch {
-            Log.d("fubar", "fuck")
+        lifecycleScope.launch {
             val result = lichessApi.getAccountEmail("Bearer ${meToken.value}")
-            Log.d("fubar", "${result.toString()}")
-            Log.d("fubar", "${result.errorBody()?.string()}")
-            Log.d("fubar", "${result.headers()}")
             if (result != null) {
                 meFlow.value = result.body().toString()
             }
@@ -98,11 +112,13 @@ class MainActivity : ComponentActivity() {
 
     }
 
-    fun authenticateWithLichess() {
+    private fun authenticateWithLichess() {
         val serviceConfig = AuthorizationServiceConfiguration(
+            // todo extract oauth config into json
             Uri.parse("https://lichess.org/oauth"),  // authorization endpoint
             Uri.parse("https://lichess.org/api/token"), // token endpoint
         )
+        // todo create data classes to wrap around AuthState
         authState = AuthState(serviceConfig)
 
         val authRequestBuilder = AuthorizationRequest.Builder(
@@ -120,8 +136,8 @@ class MainActivity : ComponentActivity() {
             .setScope("email:read")
             .build()
 
+        _userAuthStateFlow.value = UserOAuthState.RequestingAccessCode
         doAuthorization(authRequest)
-
     }
 
     private fun doAuthorization(authRequest: AuthorizationRequest) {
@@ -129,6 +145,7 @@ class MainActivity : ComponentActivity() {
         startActivityForResult(authIntent, RC_AUTH)
     }
 
+    // todo replace with registering result listener
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == RC_AUTH) {
@@ -139,20 +156,22 @@ class MainActivity : ComponentActivity() {
                 this.update(resp, ex)
             }
 
-//            meToken.value = resp?.authorizationCode ?: "no token"
-            // ... process the response or exception ...
-
+            _userAuthStateFlow.value = UserOAuthState.AcquiringAccessToken("u")
             authService.performTokenRequest(
-                resp!!.createTokenExchangeRequest(),
-                TokenResponseCallback { resp, ex ->
-                    if (resp != null) {
-                        Log.d("fubar", "${resp.toString()} ${ex?.toString()}")
-                        meToken.value = resp.accessToken ?: "null"
-                        // exchange succeeded
+                resp!!.createTokenExchangeRequest()
+            ) { resp, ex ->
+                if (resp != null) {
+                    // todo save token to local storage + encryption
+                    val oAuthState = if (resp.accessToken != null) {
+                        UserOAuthState.Authorized(accessToken = resp.accessToken!!)
                     } else {
-                        // authorization failed, check ex for more details
+                        UserOAuthState.Error(message = "something went wrong")
                     }
-                })
+                    _userAuthStateFlow.value = oAuthState
+                } else {
+                    // authorization failed, check ex for more details
+                }
+            }
 
         } else {
             // ...
