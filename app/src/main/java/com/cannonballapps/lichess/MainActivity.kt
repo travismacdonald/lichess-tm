@@ -36,8 +36,8 @@ class MainActivity : ComponentActivity() {
         private const val RC_AUTH = 4
     }
 
-    private val meFlow = MutableStateFlow<String>("null")
-    private val meToken = MutableStateFlow<String>("null")
+    private val meFlow = MutableStateFlow("null")
+    private val meToken = MutableStateFlow("null")
 
     private val authService by lazy { AuthorizationService(this) }
 
